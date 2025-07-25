@@ -1,4 +1,4 @@
-# Next.js SSR AWS インフラストラクチャ
+# NK AWS インフラストラクチャ
 
 このTerraformの設定は、以下のAWSサービスを使用してプロダクション対応のNext.js SSRアプリケーションをデプロイします：
 
