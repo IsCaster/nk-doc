@@ -8,7 +8,7 @@
 - **ECR** - Dockerイメージ用のElastic Container Registry
 - **CloudFront** - グローバルコンテンツ配信用のCDN
 - **S3** - 静的アセットとCloudFrontログ用の単一バケット
-- **RDS Aurora MySQL** - アプリケーションデータ用のServerless v2リレーショナルデータベース
+- **RDS MySQL** - アプリケーションデータ用のServerless v2リレーショナルデータベース
 - **Cognito** - ユーザー認証・認可
 - **Route 53** - DNS管理（オプション）
 - **ACM** - SSL証明書（オプション）
@@ -28,7 +28,7 @@ graph TB
     end
 
     subgraph "AWS リージョン: ap-northeast-1"
-        subgraph "VPC (10.0.0.0/16)"
+    subgraph "VPC (10.0.0.0/16)"
             subgraph "パブリックサブネット"
                 subgraph "AZ-1a (10.0.2.0/24)"
                     ALB1["🔄 ALB<br/>ターゲットグループ"]
@@ -54,8 +54,8 @@ graph TB
 
                 %% データベース
                 subgraph "データベース"
-                    AuroraWriter["📝 Aurora Writer<br/>Aurora MySQL"]
-                    AuroraReader["👓 Aurora Reader<br/>Aurora MySQL"]
+                    Writer["📝 Writer<br/>RDS MySQL"]
+                    Reader["👓 Reader<br/>RDS MySQL"]
                 end
             end
         end
@@ -98,10 +98,10 @@ graph TB
     ECS2 --> CognitoIdentityPool
 
     %% ECSからデータベース
-    ECS1 --> AuroraWriter
-    ECS1 --> AuroraReader
-    ECS2 --> AuroraWriter
-    ECS2 --> AuroraReader
+    ECS1 --> Writer
+    ECS1 --> Reader
+    ECS2 --> Writer
+    ECS2 --> Reader
 
     %% ネットワーキング
     IGW --> ALB1
@@ -127,7 +127,7 @@ graph TB
 
     class Route53,CloudFront,ACM aws
     class ECS1,ECS2,ECR compute
-    class S3Bucket,CloudWatch,AuroraWriter,AuroraReader storage
+    class S3Bucket,CloudWatch,Writer,Reader storage
     class ALB1,ALB2,IGW,NAT1,NAT2 network
     class CognitoUserPool,CognitoIdentityPool auth
 ```
@@ -144,7 +144,7 @@ sequenceDiagram
     participant ECS as ECS Fargate
     participant NextJS as Next.jsアプリ
     participant Cognito as Cognito
-    participant Aurora as Aurora
+    participant RDS as RDS
 
     Note over User,NextJS: 認証フロー
     User->>NextJS: ログインリクエスト
@@ -167,14 +167,14 @@ sequenceDiagram
     ECS->>NextJS: 認証済みリクエスト処理
     NextJS->>Cognito: JWTトークン検証
     Cognito->>NextJS: トークン検証レスポンス
-    NextJS->>Aurora: SQL/クエリ（認可済み）
-    Aurora->>NextJS: 結果
+    NextJS->>RDS: SQL/クエリ（認可済み）
+    RDS->>NextJS: 結果
     NextJS->>ECS: HTMLレスポンス生成
     ECS->>ALB: レスポンス返却
     ALB->>CloudFront: レスポンス転送
     CloudFront->>User: 認証済みコンテンツ配信
 
-    Note over NextJS,Aurora: Next.jsは動的データでAuroraと連携
+    Note over NextJS,RDS: Next.jsは動的データでRDSと連携
     Note over NextJS,Cognito: Cognitoが認証・認可を処理
 ```
 
@@ -260,7 +260,6 @@ aws s3 sync ./public s3://[BUCKET_NAME]/static --delete
 
 #### アプリケーションへのアクセス
 
-- **ALB（直接）**: `http://[ALB_DNS_NAME]`
 - **CloudFront（CDN）**: `https://[CLOUDFRONT_DOMAIN]`
 
 > **注意**: すべての具体的なURLとコマンドは`terraform output deployment_instructions`で提供されます
@@ -280,14 +279,14 @@ aws s3 sync ./public s3://[BUCKET_NAME]/static --delete
 
 #### データベース変数
 
-- `db_engine_version` - Aurora MySQLエンジンバージョン（例：`5.7.mysql_aurora.2.11.1`）
+- `db_engine_version` - RDS MySQLエンジンバージョン（例：`5.7.mysql_aurora.2.11.1`）
 - `db_master_username` - マスターDBユーザー名 _（本番環境ではAWS Secrets Managerにシークレットを配置）_
 - `db_master_password` - マスターDBパスワード **機密情報！本番環境ではAWS Secrets Managerを使用**
 
 例（`terraform.tfvars`）：
 
 ```hcl
-# Aurora MySQL設定
+# RDS MySQL設定
 db_engine_version = "5.7.mysql_aurora.2.11.1"
 db_master_username = "admin"
 db_master_password = "ChangeMe123!" # 本番環境ではSecrets Managerを使用
@@ -350,7 +349,7 @@ terraform output cognito_domain
 ├── alb.tf              # アプリケーションロードバランサー
 ├── ecs.tf              # ECSクラスターとサービス
 ├── ecr.tf              # Elastic Container Registry
-├── rds.tf              # Aurora MySQLデータベースクラスター
+├── rds.tf              # RDS MySQLデータベースクラスター
 ├── s3.tf               # S3バケット（単一バケット）
 ├── cloudfront.tf       # CloudFront配信
 ├── cognito.tf          # Cognitoユーザープールとアイデンティティプール
@@ -380,39 +379,6 @@ terraform output cognito_domain
 - **ターゲット追跡** - CPU使用率ベース（70%）
 - **最小/最大容量** - 変数で設定可能
 
-## コスト
-
-### コスト内訳
-
-```mermaid
-pie title 月額コスト見積もり（USD）
-    "ALB" : 20
-    "ECS Fargate" : 45
-    "CloudFront" : 5
-    "S3 Storage" : 3
-    "Route 53" : 0.5
-    "Data Transfer" : 10
-    "CloudWatch" : 2
-    "Aurora MySQL" : 55
-    "Cognito" : 2
-```
-
-推定月額コスト（ap-northeast-1）：
-
-- **VPC**: 無料
-- **ALB**: ~$20（固定コスト）
-- **ECS Fargate**: ~$30-60（CPU/メモリ使用量による）
-- **CloudFront**: ~$1-10（トラフィックによる）
-- **S3**: ~$1-5（ストレージによる）
-- **Route 53**: ~$0.50（ホストゾーン使用時）
-- **データ転送**: ~$5-15（トラフィックによる）
-- **CloudWatch**: ~$1-3（ログとメトリクス）
-- **Aurora Serverless v2**: ~$30–80（Aurora MySQLクラスター、使用量による変動）
-- **Cognito**: ~$0-5（50,000 MAU無料枠、その後$0.0055/MAU）
-- **ECR**: ~$1-3（ストレージによる）
-
-**合計見積もり**: ~$90-210/月
-
 ## クリーンアップ
 
 すべてのリソースを削除するには：
@@ -421,33 +387,7 @@ pie title 月額コスト見積もり（USD）
 terraform destroy
 ```
 
-## トラブルシューティング
 
-### よくある問題
-
-1. **ECSタスクが開始しない**
-
-   - CloudWatchログを確認
-   - コンテナイメージの存在を確認
-   - セキュリティグループルールを確認
-
-2. **ALBヘルスチェックが失敗する**
-
-   - コンテナポートとALBターゲットグループのマッチを確認
-   - アプリケーションヘルスエンドポイントを確認
-
-3. **CloudFrontがコンテンツを配信しない**
-   - S3バケットポリシーを確認
-   - CloudFrontキャッシュ動作を確認
-
-### サポート
-
-問題が発生した場合：
-
-1. CloudWatchログを確認
-2. AWSコンソールでエラーメッセージを確認
-3. IAM権限を確認
-4. セキュリティグループルールを確認
 
 ## デプロイフロー
 
@@ -486,13 +426,3 @@ flowchart TD
     style J fill:#ffcdd2
 ```
 
-## 次のステップ
-
-1. **CI/CDパイプラインの設定**（GitHub Actions、GitLab CI、またはAWS CodePipeline）
-2. **監視とアラートの設定**（CloudWatchアラーム、SNS通知）
-3. **セキュリティのためのWAF追加**（AWS WAFとCloudFront）
-4. **バックアップ戦略の実装**（S3バージョニング、ECSタスク定義バックアップ）
-5. **複数環境の設定**（dev、staging、prod）
-6. **データベースサポートの追加**（RDS、DynamoDB）
-7. **シークレット管理の実装**（AWS Secrets Manager）
-8. **可観測性の追加**（X-Rayトレーシング、カスタムメトリクス）
